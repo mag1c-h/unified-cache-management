@@ -2,6 +2,7 @@
 # for more info about CODEOWNERS file
 
 * @mag1c-h @ygwpz @FangRun2 @Tarrei
+
 /.github @Wwwzff @hek14 @ygwpz @mag1c-h @FangRun2 @Tarrei
 
 /ucm/sparse @wuhuxiao @wangwenxin0312 @hek14 @ygwpz @mag1c-h
