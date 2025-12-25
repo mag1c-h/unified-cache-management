@@ -23,6 +23,7 @@
  * */
 #include "cache_store.h"
 #include <shared_mutex>
+#include "buffer_manager.h"
 #include "load_queue.h"
 #include "logger/logger.h"
 #include "template/hashset.h"
@@ -32,7 +33,7 @@ namespace UC::CacheStore {
 
 class CacheStoreImpl {
 public:
-    StoreV1* backend{nullptr};
+    BufferManager bufferMgr;
     bool transEnable{false};
     TransManager transMgr;
 
@@ -44,10 +45,14 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        backend = static_cast<StoreV1*>((void*)config.storeBackend);
+        s = bufferMgr.Setup(config);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to setup buffer manager.", s);
+            return s;
+        }
         transEnable = config.deviceId >= 0;
         if (transEnable) {
-            s = transMgr.Setup(config);
+            s = transMgr.Setup(config, bufferMgr.GetTransBuffer());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
@@ -80,6 +85,7 @@ private:
     }
     void ShowConfig(const Config& config)
     {
+        auto backend = static_cast<StoreV1*>((void*)config.storeBackend);
         constexpr const char* ns = "CacheStore";
         std::string buildType = UCM_BUILD_TYPE;
         if (buildType.empty()) { buildType = "Release"; }
@@ -116,7 +122,7 @@ std::string CacheStore::Readme() const { return "CacheStore"; }
 
 Expected<std::vector<uint8_t>> CacheStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
-    auto res = impl_->backend->Lookup(blocks, num);
+    auto res = impl_->bufferMgr.Lookup(blocks, num);
     if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
     return res;
 }

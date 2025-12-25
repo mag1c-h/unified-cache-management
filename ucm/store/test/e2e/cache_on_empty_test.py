@@ -24,7 +24,6 @@
 #
 import os
 import secrets
-import time
 
 import torch
 
@@ -70,6 +69,8 @@ def e2e_test(
     ]
     task = worker.dump(chunk_block_ids, shard_indexes, src_tensors)
     worker.wait(task)
+    founds = scheduler.lookup(chunk_block_ids)
+    assert all(founds)
     dst_tensors = [[torch.empty_like(t) for t in row] for row in src_tensors]
     task = worker.load(chunk_block_ids, shard_indexes, dst_tensors)
     worker.wait(task)
@@ -88,16 +89,14 @@ def main():
     config["device_id"] = device_id
     config["unique_id"] = secrets.token_hex(8)
     config["timeout_ms"] = 10000
-    config["device_id"] = -1
-    scheduler = UcmPipelineStore(config)
-    config["device_id"] = device_id
     config["tensor_size"] = tensor_size
     config["shard_size"] = chunk_block_size
     config["block_size"] = chunk_block_size
     config["share_buffer_enable"] = True
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
-    worker = UcmPipelineStore(config)
+    worker = UcmPipelineStore(config | {"device_id": device_id})
+    scheduler = UcmPipelineStore(config | {"device_id": -1})
     test_batch_number = 512
     for _ in range(test_batch_number):
         e2e_test(
@@ -109,7 +108,6 @@ def main():
             request_size,
             device_id,
         )
-    time.sleep(10)
 
 
 if __name__ == "__main__":
