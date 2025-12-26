@@ -21,8 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "empty_store.h"
 #include "template/store_binder.h"
+#include "ucmstore_v1.h"
+
+namespace UC::EmptyStore {
+
+struct Config {
+    void* padding;
+};
+
+class EmptyStore : public StoreV1 {
+public:
+    ~EmptyStore() override = default;
+    Status Setup(const Config& config) { return Status::OK(); }
+    std::string Readme() const override { return "EmptyStore"; }
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
+    {
+        return std::vector<uint8_t>(num, false);
+    }
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override { return NextId(); }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override { return NextId(); }
+    Expected<bool> Check(Detail::TaskHandle taskId) override { return true; }
+    Status Wait(Detail::TaskHandle taskId) override { return Status::OK(); }
+
+private:
+    static Detail::TaskHandle NextId() noexcept
+    {
+        static std::atomic<Detail::TaskHandle> id{1};
+        return id.fetch_add(1, std::memory_order_relaxed);
+    };
+};
+
+}  // namespace UC::EmptyStore
 
 PYBIND11_MODULE(ucmemptystore, module)
 {
