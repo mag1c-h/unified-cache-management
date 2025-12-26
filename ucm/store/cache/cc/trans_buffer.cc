@@ -361,17 +361,19 @@ public:
 
 Status TransBuffer::Setup(const Config& config)
 {
-    const auto dataNodeSize = config.shardSize;
-    constexpr auto metaNodeSize = sizeof(BufferMetaNode);
-    const auto nNode = config.bufferSize / (dataNodeSize + metaNodeSize);
-    if (!config.shareBufferEnable) {
-        strategy_ = std::make_shared<LocalBufferStrategy>();
-    } else if (config.deviceId >= 0) {
-        strategy_ = std::make_shared<SharedBufferStrategy>();
-    } else {
-        strategy_ = std::make_shared<SharedBufferWatcherStrategy>();
+    try {
+        if (!config.shareBufferEnable) {
+            strategy_ = std::make_shared<LocalBufferStrategy>();
+        } else if (config.deviceId >= 0) {
+            strategy_ = std::make_shared<SharedBufferStrategy>();
+        } else {
+            strategy_ = std::make_shared<SharedBufferWatcherStrategy>();
+        }
+    } catch (const std::exception& e) {
+        return Status::Error(fmt::format("failed({}) to make buffer strategy", e.what()));
     }
-    return strategy_->Setup(config.uniqueId, config.deviceId, dataNodeSize, nNode);
+    return strategy_->Setup(config.uniqueId, config.deviceId, config.shardSize,
+                            config.bufferNumber);
 }
 
 TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shardIdx)

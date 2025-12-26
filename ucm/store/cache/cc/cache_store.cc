@@ -74,8 +74,8 @@ private:
             return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
                                         config.shardSize, config.blockSize);
         }
-        if (config.bufferSize < config.blockSize * 1024) {
-            return Status::InvalidParam("too small buffer size({})", config.bufferSize);
+        if (config.bufferNumber < 1024) {
+            return Status::InvalidParam("too small buffer number({})", config.bufferNumber);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
@@ -93,11 +93,10 @@ private:
         UC_INFO("Set {}::StoreBackend to {}.", ns, backend->Readme());
         UC_INFO("Set {}::UniqueId to {}.", ns, config.uniqueId);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
-        if (config.deviceId == -1) { return; }
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, config.blockSize);
-        UC_INFO("Set {}::BufferSize to {}.", ns, config.bufferSize);
+        UC_INFO("Set {}::BufferNumber to {}.", ns, config.bufferNumber);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);

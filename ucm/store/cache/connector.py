@@ -48,7 +48,7 @@ class UcmCacheStore(UcmKVStoreBaseV1):
             "tensor_size": "tensorSize",
             "shard_size": "shardSize",
             "block_size": "blockSize",
-            "buffer_size": "bufferSize",
+            "buffer_number": "bufferNumber",
             "share_buffer_enable": "shareBufferEnable",
             "waiting_queue_depth": "waitingQueueDepth",
             "running_queue_depth": "runningQueueDepth",
