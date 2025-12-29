@@ -78,7 +78,7 @@ def e2e_test(
 
 
 def main():
-    tensor_size = 262144
+    tensor_size = 32768
     layer_size = 64
     chunk_size = 4
     request_size = chunk_size * 16
@@ -86,7 +86,6 @@ def main():
     chunk_block_size = tensor_size * layer_size * chunk_size
     config = {}
     config["store_pipeline"] = "Cache|Empty"
-    config["device_id"] = device_id
     config["unique_id"] = secrets.token_hex(8)
     config["timeout_ms"] = 10000
     config["tensor_size"] = tensor_size
@@ -96,7 +95,7 @@ def main():
     config["waiting_queue_depth"] = 16
     config["running_queue_depth"] = 1024
     worker = UcmPipelineStore(config | {"device_id": device_id})
-    scheduler = UcmPipelineStore(config | {"device_id": -1})
+    scheduler = UcmPipelineStore(config)
     test_batch_number = 512
     for _ in range(test_batch_number):
         e2e_test(
