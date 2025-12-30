@@ -32,10 +32,10 @@ namespace UC::PosixStore {
 static const std::string DATA_ROOT = "data/";
 static const std::string TEMP_ROOT = "temp/";
 
-Status SpaceLayout::Setup(const std::vector<std::string>& storageBackends)
+Status SpaceLayout::Setup(const Config& config)
 {
     auto status = Status::OK();
-    for (auto& path : storageBackends) {
+    for (auto& path : config.storageBackends) {
         if ((status = AddStorageBackend(path)).Failure()) { return status; }
     }
     return status;
