@@ -50,6 +50,7 @@ class UcmPosixStore(UcmKVStoreBaseV1):
             "io_direct": "ioDirect",
             "stream_number": "streamNumber",
             "timeout_ms": "timeoutMs",
+            "shard_data_dir": "shardDataDir",
         }
         self.store = ucmposixstore.PosixStore()
         param = ucmposixstore.PosixStore.Config()
