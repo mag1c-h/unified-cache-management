@@ -27,18 +27,23 @@
 #include "logger/logger.h"
 #include "template/task_wrapper.h"
 #include "trans_queue.h"
+#include "trans_queue_async.h"
 
 namespace UC::PosixStore {
 
 class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     TransQueue queue_;
+    TransQueueAsync queueAsync_;
     size_t shardSize_;
+    bool ioAsync_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
+        ioAsync_ = config.ioAsync;
+        if (ioAsync_) { return queueAsync_.Setup(config, &failureSet_, layout); }
         return queue_.Setup(config, &failureSet_, layout);
     }
 
@@ -56,7 +61,11 @@ protected:
             UC_DEBUG("Posix task({},{},{},{}) finished, cost {:.3f}ms.", id, brief, num, size,
                      cost * 1e3);
         });
-        queue_.Push(t, w);
+        if (ioAsync_) {
+            queueAsync_.Push(t, w);
+        } else {
+            queue_.Push(t, w);
+        }
     }
 };
 
