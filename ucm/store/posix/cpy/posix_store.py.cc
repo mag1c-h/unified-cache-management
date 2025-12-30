@@ -45,6 +45,7 @@ PYBIND11_MODULE(ucmposixstore, module)
     config.def_readwrite("streamNumber", &Config::streamNumber);
     config.def_readwrite("timeoutMs", &Config::timeoutMs);
     config.def_readwrite("shardDataDir", &Config::shardDataDir);
+    config.def_readwrite("ioAsync", &Config::ioAsync);
     store.def(py::init<>());
     store.def("Self", &PosixStorePy::Self);
     store.def("Setup", &PosixStorePy::Setup);

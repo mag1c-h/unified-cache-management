@@ -90,6 +90,7 @@ private:
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::ShardDataDir to {}.", ns, config.shardDataDir);
+        UC_INFO("Set {}::IoAsync to {}.", ns, config.ioAsync);
     }
 };
 
