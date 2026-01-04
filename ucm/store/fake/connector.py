@@ -134,3 +134,37 @@ class UcmFakeStore(UcmKVStoreBaseV1):
 
     def check(self, task: Task) -> bool:
         return self.store.Check(task.task_id)
+
+
+if __name__ == "__main__":
+    import os
+    import secrets
+
+    def _aligned_array(size, alignment=4096, dtype=np.uint8):
+        extra = alignment
+        buf = np.empty(size + extra, dtype=dtype)
+        address = buf.ctypes.data
+        offset = (alignment - (address % alignment)) % alignment
+        aligned_view = buf[offset : offset + size]
+        return aligned_view
+
+    os.environ["UC_LOGGER_LEVEL"] = "debug"
+    config = {
+        "unique_id": secrets.token_hex(),
+        "buffer_number": 4096,
+        "share_buffer_enable": True,
+    }
+    worker = UcmFakeStore(config)
+    scheduler = UcmFakeStore(config)
+    block_number = 1024
+    block_size = 32768
+    block_ids = [secrets.token_bytes(16) for _ in range(block_number)]
+    shard_idxes = [0 for _ in range(block_number)]
+    raw_data = [_aligned_array(block_size) for _ in range(block_number)]
+    block_data = [[d.ctypes.data] for d in raw_data]
+    founds = scheduler.lookup(block_ids)
+    assert not any(founds)
+    task = worker.dump_data(block_ids, shard_idxes, block_data)
+    worker.wait(task)
+    founds = scheduler.lookup(block_ids)
+    assert all(founds)
