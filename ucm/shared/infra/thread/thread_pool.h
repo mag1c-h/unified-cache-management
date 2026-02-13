@@ -68,7 +68,7 @@ public:
     ~ThreadPool()
     {
         {
-            std::lock_guard<std::mutex> lock(this->taskMtx_);
+            std::lock_guard<std::mutex> lock{endMtx_};
             this->stop_ = true;
             this->cv_.notify_all();
         }
@@ -121,14 +121,14 @@ public:
     }
     void Push(std::list<Task>& tasks) noexcept
     {
-        std::unique_lock<std::mutex> lock(this->taskMtx_);
-        this->taskQ_.splice(this->taskQ_.end(), tasks);
+        std::lock_guard<std::mutex> lock{frontMtx_};
+        frontQueue_.splice(frontQueue_.end(), tasks);
         this->cv_.notify_all();
     }
     void Push(Task&& task) noexcept
     {
-        std::unique_lock<std::mutex> lock(this->taskMtx_);
-        this->taskQ_.push_back(std::move(task));
+        std::lock_guard<std::mutex> lock{frontMtx_};
+        frontQueue_.push_back(std::move(task));
         this->cv_.notify_one();
     }
 
@@ -158,14 +158,20 @@ private:
         while (success) {
             std::shared_ptr<Task> task = nullptr;
             {
-                std::unique_lock<std::mutex> lock(this->taskMtx_);
-                this->cv_.wait(lock, [this, worker] {
-                    return this->stop_ || worker->stop.StopRequested() || !this->taskQ_.empty();
+                std::unique_lock<std::mutex> endLock{endMtx_};
+                cv_.wait(endLock, [this, worker] {
+                    return stop_ || worker->stop.StopRequested() || !endQueue_.empty() ||
+                           !frontQueue_.empty();
                 });
-                if (this->stop_ || worker->stop.StopRequested()) { break; }
-                if (this->taskQ_.empty()) { continue; }
-                task = std::make_shared<Task>(std::move(this->taskQ_.front()));
-                this->taskQ_.pop_front();
+                if (stop_ || worker->stop.StopRequested()) [[unlikely]] { break; }
+                if (endQueue_.empty()) {
+                    std::lock_guard<std::mutex> frontLock{frontMtx_};
+                    if (frontQueue_.empty()) [[unlikely]] { continue; }
+                    endQueue_.splice(endQueue_.end(), frontQueue_);
+                }
+                if (endQueue_.empty()) [[unlikely]] { continue; }
+                task = std::make_shared<Task>(std::move(endQueue_.front()));
+                endQueue_.pop_front();
             }
             worker->current = task;
             worker->tp.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
@@ -218,8 +224,10 @@ private:
     bool stop_{false};
     std::vector<std::shared_ptr<Worker>> workers_;
     std::thread monitor_;
-    std::mutex taskMtx_;
-    std::list<Task> taskQ_;
+    std::list<Task> frontQueue_;
+    std::list<Task> endQueue_;
+    std::mutex frontMtx_;
+    std::mutex endMtx_;
     std::condition_variable cv_;
 };
 
