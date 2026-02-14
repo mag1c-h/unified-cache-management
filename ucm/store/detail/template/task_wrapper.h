@@ -34,6 +34,9 @@ namespace UC::Detail {
 
 template <typename Task, typename TaskHandle, typename TaskWaiter = Latch>
 class TaskWrapper {
+    static constexpr size_t HASH_BUCKET_NUMBER = 12289;
+    static inline size_t TaskHash(TaskHandle handle) { return handle % HASH_BUCKET_NUMBER; }
+
 protected:
     using TaskPtr = std::shared_ptr<Task>;
     using WaiterPtr = std::shared_ptr<TaskWaiter>;
@@ -42,7 +45,7 @@ protected:
     using TaskIdSet = HashSet<TaskHandle>;
     size_t timeoutMs_;
     TaskIdSet failureSet_;
-    TaskSet tasks_{};
+    std::array<TaskSet, HASH_BUCKET_NUMBER> tasks_;
     std::shared_mutex mutex_{};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
 
@@ -50,13 +53,14 @@ public:
     Expected<TaskHandle> Submit(Task task)
     {
         auto handle = task.id;
+        auto& tasks = tasks_[TaskHash(handle)];
         TaskPtr t = nullptr;
         WaiterPtr w = nullptr;
         try {
             t = std::make_shared<Task>(std::move(task));
             w = std::make_shared<TaskWaiter>();
             std::unique_lock<std::shared_mutex> lock(mutex_);
-            auto inserted = tasks_.emplace(handle, TaskPair{t, w}).second;
+            auto inserted = tasks.emplace(handle, TaskPair{t, w}).second;
             if (!inserted) [[unlikely]] { return Status::DuplicateKey(); }
         } catch (const std::exception& e) {
             return Status::Error(e.what());
@@ -66,26 +70,28 @@ public:
     }
     Expected<bool> Check(TaskHandle taskId)
     {
+        auto& tasks = tasks_[TaskHash(taskId)];
         WaiterPtr w = nullptr;
         {
             std::shared_lock<std::shared_mutex> lock(mutex_);
-            auto iter = tasks_.find(taskId);
-            if (iter == tasks_.end()) [[unlikely]] { return Status::NotFound(); }
+            auto iter = tasks.find(taskId);
+            if (iter == tasks.end()) [[unlikely]] { return Status::NotFound(); }
             w = iter->second.second;
         }
         return w->Check();
     }
     Status Wait(TaskHandle taskId)
     {
+        auto& tasks = tasks_[TaskHash(taskId)];
         TaskPtr t = nullptr;
         WaiterPtr w = nullptr;
         {
             std::unique_lock<std::shared_mutex> lock(mutex_);
-            auto iter = tasks_.find(taskId);
-            if (iter == tasks_.end()) [[unlikely]] { return Status::NotFound(); }
+            auto iter = tasks.find(taskId);
+            if (iter == tasks.end()) [[unlikely]] { return Status::NotFound(); }
             t = iter->second.first;
             w = iter->second.second;
-            tasks_.erase(iter);
+            tasks.erase(iter);
         }
         auto finished = w->WaitFor(timeoutMs_);
         if (!finished) [[unlikely]] {
