@@ -28,8 +28,8 @@
 #include "space_layout.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
-#include "thread/thread_pool.h"
 #include "trans_task.h"
+#include "trans_worker_pool.h"
 
 namespace UC::PosixStore {
 
@@ -40,15 +40,15 @@ class TransQueue {
 
 private:
     struct IoUnit {
-        Detail::TaskHandle owner;
+        Detail::TaskHandle owner{0};
         Detail::Shard shard;
-        std::shared_ptr<Latch> waiter;
+        std::shared_ptr<Latch> waiter{nullptr};
         bool firstIo{false};
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
-    ThreadPool<IoUnit> loadPool_;
-    ThreadPool<IoUnit> dumpPool_;
+    TransWorkerPool<IoUnit> loadPool_;
+    TransWorkerPool<IoUnit> dumpPool_;
     size_t ioSize_;
     size_t shardSize_;
     size_t nShardPerBlock_;

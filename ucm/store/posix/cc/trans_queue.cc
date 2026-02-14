@@ -35,17 +35,19 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
-    auto success = loadPool_.SetNWorker(config.dataTransConcurrency)
-                       .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
-                       .Run();
-    if (!success) [[unlikely]] {
-        return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
+    auto s = loadPool_.SetNWorker(config.dataTransConcurrency)
+                 .SetWorkerFn([this](auto& ios) { LoadWorker(ios); })
+                 .Run();
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to start load pool.", s);
+        return s;
     }
-    success = dumpPool_.SetNWorker(config.dataTransConcurrency)
-                  .SetWorkerFn([this](auto& ios, auto&) { DumpWorker(ios); })
-                  .Run();
-    if (!success) [[unlikely]] {
-        return Status::Error(fmt::format("workers({}) start failed", config.dataTransConcurrency));
+    s = dumpPool_.SetNWorker(config.dataTransConcurrency)
+            .SetWorkerFn([this](auto& ios) { DumpWorker(ios); })
+            .Run();
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to start dump pool.", s);
+        return s;
     }
     return Status::OK();
 }
