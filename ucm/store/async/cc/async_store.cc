@@ -21,12 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "global_config.h"
+#include "space_manager.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsyncStore {
 
 class AsyncStore : public StoreV1 {
+    bool llmWorker_{false};
+    SpaceManager spaceMgr_;
+
 public:
     Status Setup(const Detail::Dictionary& param) override
     {
@@ -36,6 +39,9 @@ public:
             UC_ERROR("Failed to parse config: {}.", status);
             return status;
         }
+        llmWorker_ = config.deviceId >= 0;
+        status = spaceMgr_.Setup(config);
+        if (status.Failure()) { return status; }
         config.Show();
         return Status::OK();
     }
@@ -54,7 +60,10 @@ public:
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
-        return Status::Unsupported();
+        if (llmWorker_) [[unlikely]] { return Status::Unsupported(); }
+        auto res = spaceMgr_.LookupOnPrefix(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
     }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
