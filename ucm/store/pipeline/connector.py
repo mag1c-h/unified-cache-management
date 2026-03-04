@@ -209,9 +209,17 @@ def _posix_pipeline_builder(
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), config)
 
 
+def _async_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack("Async", str(store_dir / "async/libasyncstore.so"), config)
+
+
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Async", _async_pipeline_builder)
