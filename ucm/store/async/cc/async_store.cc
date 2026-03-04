@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include "trans_manager.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsyncStore {
@@ -29,6 +30,7 @@ namespace UC::AsyncStore {
 class AsyncStore : public StoreV1 {
     bool llmWorker_{false};
     SpaceManager spaceMgr_;
+    TransManager transMgr_;
 
 public:
     Status Setup(const Detail::Dictionary& param) override
@@ -42,6 +44,10 @@ public:
         llmWorker_ = config.deviceId >= 0;
         status = spaceMgr_.Setup(config);
         if (status.Failure()) { return status; }
+        if (llmWorker_) {
+            status = transMgr_.Setup(config, spaceMgr_.GetLayout());
+            if (status.Failure()) { return status; }
+        }
         config.Show();
         return Status::OK();
     }
@@ -68,14 +74,36 @@ public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Status::Unsupported();
+        if (!llmWorker_) [[unlikely]] { return Status::Unsupported(); }
+        auto res = transMgr_.Submit({TransTask::Type::LOAD, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
+        }
+        return res;
     }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
-        return Status::Unsupported();
+        if (!llmWorker_) [[unlikely]] { return Status::Unsupported(); }
+        auto res = transMgr_.Submit({TransTask::Type::DUMP, std::move(task)});
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
+        }
+        return res;
     }
-    Expected<bool> Check(Detail::TaskHandle taskId) override { return Status::Unsupported(); }
-    Status Wait(Detail::TaskHandle taskId) override { return Status::Unsupported(); }
+    Expected<bool> Check(Detail::TaskHandle taskId) override
+    {
+        if (!llmWorker_) [[unlikely]] { return Status::Unsupported(); }
+        auto res = transMgr_.Check(taskId);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
+        return res;
+    }
+    Status Wait(Detail::TaskHandle taskId) override
+    {
+        if (!llmWorker_) [[unlikely]] { return Status::Unsupported(); }
+        auto s = transMgr_.Wait(taskId);
+        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        return s;
+    }
 };
 
 }  // namespace UC::AsyncStore
