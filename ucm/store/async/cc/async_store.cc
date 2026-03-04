@@ -42,7 +42,15 @@ public:
     std::string Readme() const override { return "AsyncStore"; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
-        return Status::Unsupported();
+        std::vector<uint8_t> results(num, false);
+        auto res = LookupOnPrefix(blocks, num);
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num);
+            return res.Error();
+        }
+        const auto index = res.Value();
+        for (ssize_t i = 0; i <= index; ++i) { results[i] = true; }
+        return results;
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
