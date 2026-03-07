@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 
 #include "global_config.h"
+#include "space_layout.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
 
@@ -42,7 +43,17 @@ public:
     }
 
 private:
-    void Dispatch(TaskPtr t, WaiterPtr w) override {}
+    void Dispatch(TaskPtr t, WaiterPtr w) override
+    {
+        const auto num = t->desc.size();
+        const auto size = shardSize_ * num;
+        t->metrics.Start(w->startTp);
+        w->SetEpilog([t, num, size] {
+            t->metrics.Tick();
+            UC_DEBUG("Async task({},{},{},{}) finished, cost {}ms.", t->id, t->desc.brief, num,
+                     size, t->metrics.Report());
+        });
+    }
 };
 
 }  // namespace UC::AsyncStore
