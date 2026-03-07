@@ -94,6 +94,8 @@ def main():
         worker.wait(handle)
         cost_dump = time.perf_counter() - tp
 
+        time.sleep(0.3)
+
         tp = time.perf_counter()
         founds = scheduler.lookup(block_ids)
         cost_fully_lookup2 = time.perf_counter() - tp
