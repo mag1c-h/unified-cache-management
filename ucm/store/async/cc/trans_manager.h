@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 #define UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 
+#include "aio_engine.h"
 #include "block_opener.h"
 #include "global_config.h"
 #include "template/task_wrapper.h"
@@ -37,6 +38,7 @@ class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
     BlockOpener opener_;
+    AioEngine aio_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
@@ -47,10 +49,57 @@ public:
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
         opener_.Setup(layout, config.openConcurrency);
-        return Status::OK();
+        return aio_.Setup();
     }
 
 private:
+    template <bool dump>
+    void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
+                      const Detail::BlockId& id, const AioEngine::Result& result)
+    {
+        if (result.error != 0) {
+            UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
+            failureSet_.Insert(tid);
+        }
+        if constexpr (dump) {
+            if (last) { layout_->CommitFile(id, !failureSet_.Contains(tid)); }
+        }
+        ::close(fd);
+        w->Done();
+    }
+    template <bool dump>
+    void OnOpenCallback(const Detail::TaskHandle& tid, WaiterPtr w, const Detail::Shard& shard,
+                        const BlockOpener::Result& result)
+    {
+        const auto last = shard.index + 1 == nShardPerBlock_;
+        const auto& id = shard.owner;
+        auto handleFailure = [&](int32_t error, int32_t fd) {
+            if (error != 0) { failureSet_.Insert(tid); }
+            if constexpr (dump) {
+                if (last) { layout_->CommitFile(id, false); }
+            }
+            if (fd >= 0) { ::close(fd); }
+            w->Done();
+        };
+        if (result.error != 0) {
+            UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
+            failureSet_.Insert(tid);
+        }
+        if (failureSet_.Contains(tid)) {
+            handleFailure(0, result.fd);
+            return;
+        }
+        AioEngine::Io io;
+        io.fd = result.fd;
+        io.offset = shard.index * shardSize_;
+        io.length = shardSize_;
+        io.buffer = shard.addrs.front();
+        io.callback = [this, tid, w, fd = result.fd, last, id](AioEngine::Result ioResult) {
+            OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
+        };
+        auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
+        if (status.Failure()) { handleFailure(-1, result.fd); }
+    }
     template <bool dump>
     void Dispatch(TaskPtr t, WaiterPtr w)
     {
@@ -65,19 +114,9 @@ private:
             task.id = shard.owner;
             task.activated = dump;
             task.flags = flags;
-            auto last = false;
-            if constexpr (dump) { last = shard.index + 1 == nShardPerBlock_; }
-            task.callback = [this, t, w, last,
-                             id = std::ref(shard.owner)](BlockOpener::Result result) {
-                if (result.error == 0) {
-                    ::close(result.fd);
-                } else {
-                    failureSet_.Insert(t->id);
-                }
-                if constexpr (dump) {
-                    if (last) { layout_->CommitFile(id, result.error == 0); }
-                }
-                w->Done();
+            task.callback = [this, tid = t->id, w,
+                             shard = std::ref(t->desc[i])](BlockOpener::Result result) {
+                OnOpenCallback<dump>(tid, w, shard, result);
             };
             tasks.push_back(std::move(task));
         }
