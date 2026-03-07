@@ -39,9 +39,10 @@ public:
     size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool ioDirect{false};
+    bool ioDirect{true};
     size_t dataTransConcurrency{8};
     size_t lookupConcurrency{8};
+    size_t openConcurrency{8};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
 
@@ -55,13 +56,14 @@ public:
         param.Get("io_direct", ioDirect);
         param.GetNumber("posix_data_trans_concurrency", dataTransConcurrency);
         param.GetNumber("posix_lookup_concurrency", lookupConcurrency);
+        param.GetNumber("posix_open_concurrency", openConcurrency);
         param.GetNumber("timeout_ms", timeoutMs);
         param.GetNumber("data_dir_shard_bytes", dataDirShardBytes);
         if (storageBackends.empty()) { return Status::InvalidParam("invalid storage backends"); }
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
-        if (dataTransConcurrency == 0 || lookupConcurrency == 0) {
-            return Status::InvalidParam("invalid concurrency({},{})", dataTransConcurrency,
-                                        lookupConcurrency);
+        if (dataTransConcurrency == 0 || lookupConcurrency == 0 || openConcurrency == 0) {
+            return Status::InvalidParam("invalid concurrency({},{},{})", dataTransConcurrency,
+                                        lookupConcurrency, openConcurrency);
         }
         if (dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", dataDirShardBytes);
@@ -87,6 +89,7 @@ public:
         UC_INFO("Set {}::IoDirect to {}.", ns, ioDirect);
         UC_INFO("Set {}::DataTransConcurrency to {}.", ns, dataTransConcurrency);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, lookupConcurrency);
+        UC_INFO("Set {}::OpenConcurrency to {}.", ns, openConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, dataDirShardBytes);
     }

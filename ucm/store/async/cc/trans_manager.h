@@ -24,8 +24,8 @@
 #ifndef UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 #define UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 
+#include "block_opener.h"
 #include "global_config.h"
-#include "space_layout.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
 
@@ -33,16 +33,57 @@ namespace UC::AsyncStore {
 
 class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
+    bool ioDirect_;
+    size_t nShardPerBlock_;
+    const SpaceLayout* layout_;
+    BlockOpener opener_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
+        ioDirect_ = config.ioDirect;
+        nShardPerBlock_ = config.blockSize / config.shardSize;
+        layout_ = layout;
+        opener_.Setup(layout, config.openConcurrency);
         return Status::OK();
     }
 
 private:
+    template <bool dump>
+    void Dispatch(TaskPtr t, WaiterPtr w)
+    {
+        const auto rwFlags = dump ? (O_CREAT | O_WRONLY) : O_RDONLY;
+        const auto flags = ioDirect_ ? rwFlags | O_DIRECT : rwFlags;
+        const auto number = t->desc.size();
+        w->Set(number);
+        std::list<BlockOpener::Task> tasks;
+        for (size_t i = 0; i < number; ++i) {
+            BlockOpener::Task task;
+            const auto& shard = t->desc[i];
+            task.id = shard.owner;
+            task.activated = dump;
+            task.flags = flags;
+            auto last = false;
+            if constexpr (dump) { last = shard.index + 1 == nShardPerBlock_; }
+            task.callback = [this, t, w, last,
+                             id = std::ref(shard.owner)](BlockOpener::Result result) {
+                if (result.error == 0) {
+                    ::close(result.fd);
+                } else {
+                    failureSet_.Insert(t->id);
+                }
+                if constexpr (dump) {
+                    if (last) { layout_->CommitFile(id, result.error == 0); }
+                }
+                w->Done();
+            };
+            tasks.push_back(std::move(task));
+        }
+        t->metrics.Tick();
+        opener_.Submit(std::move(tasks));
+    }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
         const auto num = t->desc.size();
@@ -53,6 +94,12 @@ private:
             UC_DEBUG("Async task({},{},{},{}) finished, cost {}ms.", t->id, t->desc.brief, num,
                      size, t->metrics.Report());
         });
+        t->metrics.Tick();
+        if (t->type == TransTask::Type::DUMP) {
+            Dispatch<true>(t, w);
+        } else {
+            Dispatch<false>(t, w);
+        }
     }
 };
 

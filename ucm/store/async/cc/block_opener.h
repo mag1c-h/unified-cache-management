@@ -47,7 +47,6 @@ public:
         Detail::BlockId id;
         bool activated;
         int32_t flags;
-        mode_t mode;
         Callback callback;
     };
 
@@ -55,7 +54,7 @@ public:
     {
         {
             std::lock_guard<std::mutex> lock{mutex_};
-            stop_ = false;
+            stop_ = true;
             cv_.notify_all();
         }
         for (auto& worker : workers_) {
@@ -86,6 +85,7 @@ public:
 private:
     void WorkerLoop()
     {
+        constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         for (;;) {
             Task task;
             {
@@ -97,7 +97,7 @@ private:
                 tasks_.pop_front();
             }
             const auto path = layout_->DataFilePath(task.id, task.activated);
-            auto fd = ::open(path.c_str(), task.flags, task.mode);
+            auto fd = ::open(path.c_str(), task.flags, mode);
             auto err = (fd < 0) ? errno : 0;
             if (task.callback) { task.callback(Result{fd, err}); }
         }
