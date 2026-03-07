@@ -34,7 +34,6 @@ namespace UC::AsyncStore {
 
 class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
-    bool ioDirect_;
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
     BlockOpener opener_;
@@ -45,7 +44,6 @@ public:
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        ioDirect_ = config.ioDirect;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
         opener_.Setup(layout, config.openConcurrency);
@@ -103,8 +101,7 @@ private:
     template <bool dump>
     void Dispatch(TaskPtr t, WaiterPtr w)
     {
-        const auto rwFlags = dump ? (O_CREAT | O_WRONLY) : O_RDONLY;
-        const auto flags = ioDirect_ ? rwFlags | O_DIRECT : rwFlags;
+        const auto flags = O_DIRECT | (dump ? (O_CREAT | O_WRONLY) : O_RDONLY);
         const auto number = t->desc.size();
         w->Set(number);
         std::list<BlockOpener::Task> tasks;

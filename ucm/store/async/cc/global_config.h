@@ -36,13 +36,10 @@ class Config {
 public:
     std::vector<std::string> storageBackends{};
     int32_t deviceId{-1};
-    size_t tensorSize{0};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool ioDirect{true};
-    size_t dataTransConcurrency{8};
     size_t lookupConcurrency{8};
-    size_t openConcurrency{8};
+    size_t openConcurrency{32};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
 
@@ -50,28 +47,24 @@ public:
     {
         param.Get("storage_backends", storageBackends);
         param.GetNumber("device_id", deviceId);
-        param.GetNumber("tensor_size", tensorSize);
         param.GetNumber("shard_size", shardSize);
         param.GetNumber("block_size", blockSize);
-        param.Get("io_direct", ioDirect);
-        param.GetNumber("posix_data_trans_concurrency", dataTransConcurrency);
-        param.GetNumber("posix_lookup_concurrency", lookupConcurrency);
-        param.GetNumber("posix_open_concurrency", openConcurrency);
+        param.GetNumber("async_lookup_concurrency", lookupConcurrency);
+        param.GetNumber("async_open_concurrency", openConcurrency);
         param.GetNumber("timeout_ms", timeoutMs);
         param.GetNumber("data_dir_shard_bytes", dataDirShardBytes);
         if (storageBackends.empty()) { return Status::InvalidParam("invalid storage backends"); }
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
-        if (dataTransConcurrency == 0 || lookupConcurrency == 0 || openConcurrency == 0) {
-            return Status::InvalidParam("invalid concurrency({},{},{})", dataTransConcurrency,
-                                        lookupConcurrency, openConcurrency);
+        if (lookupConcurrency == 0 || openConcurrency == 0) {
+            return Status::InvalidParam("invalid concurrency({},{})", lookupConcurrency,
+                                        openConcurrency);
         }
         if (dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", dataDirShardBytes);
         }
         if (deviceId == -1) { return Status::OK(); }
-        if (tensorSize == 0 || shardSize < tensorSize || blockSize < shardSize ||
-            shardSize % tensorSize != 0 || blockSize % shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", tensorSize, shardSize, blockSize);
+        if (blockSize < shardSize || blockSize % shardSize != 0) {
+            return Status::InvalidParam("invalid size({},{})", shardSize, blockSize);
         }
         return Status::OK();
     }
@@ -83,11 +76,8 @@ public:
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, storageBackends);
         UC_INFO("Set {}::DeviceId to {}.", ns, deviceId);
-        UC_INFO("Set {}::TensorSize to {}.", ns, tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, shardSize);
         UC_INFO("Set {}::BlockSize to {}.", ns, blockSize);
-        UC_INFO("Set {}::IoDirect to {}.", ns, ioDirect);
-        UC_INFO("Set {}::DataTransConcurrency to {}.", ns, dataTransConcurrency);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, lookupConcurrency);
         UC_INFO("Set {}::OpenConcurrency to {}.", ns, openConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, timeoutMs);
