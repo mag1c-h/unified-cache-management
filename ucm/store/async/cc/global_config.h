@@ -40,6 +40,7 @@ public:
     size_t blockSize{0};
     size_t lookupConcurrency{8};
     size_t openConcurrency{32};
+    size_t commitConcurrency{16};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
 
@@ -51,13 +52,14 @@ public:
         param.GetNumber("block_size", blockSize);
         param.GetNumber("async_lookup_concurrency", lookupConcurrency);
         param.GetNumber("async_open_concurrency", openConcurrency);
+        param.GetNumber("async_commit_concurrency", commitConcurrency);
         param.GetNumber("timeout_ms", timeoutMs);
         param.GetNumber("data_dir_shard_bytes", dataDirShardBytes);
         if (storageBackends.empty()) { return Status::InvalidParam("invalid storage backends"); }
         if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
-        if (lookupConcurrency == 0 || openConcurrency == 0) {
-            return Status::InvalidParam("invalid concurrency({},{})", lookupConcurrency,
-                                        openConcurrency);
+        if (lookupConcurrency == 0 || openConcurrency == 0 || commitConcurrency == 0) {
+            return Status::InvalidParam("invalid concurrency({},{}, {})", lookupConcurrency,
+                                        openConcurrency, commitConcurrency);
         }
         if (dataDirShardBytes > 5) {
             return Status::InvalidParam("invalid shard bytes({})", dataDirShardBytes);
@@ -80,6 +82,7 @@ public:
         UC_INFO("Set {}::BlockSize to {}.", ns, blockSize);
         UC_INFO("Set {}::LookupConcurrency to {}.", ns, lookupConcurrency);
         UC_INFO("Set {}::OpenConcurrency to {}.", ns, openConcurrency);
+        UC_INFO("Set {}::CommitConcurrency to {}.", ns, commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, dataDirShardBytes);
     }

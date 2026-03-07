@@ -46,11 +46,15 @@ public:
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
-        blockOperator_.Setup(layout, config.openConcurrency);
+        blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup();
     }
 
 private:
+    void CommitBlock(Detail::BlockId id, bool success)
+    {
+        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
+    }
     template <bool dump>
     void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
                       const Detail::BlockId& id, const AioEngine::Result& result)
@@ -59,10 +63,10 @@ private:
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
             failureSet_.Insert(tid);
         }
-        if constexpr (dump) {
-            if (last) { layout_->CommitFile(id, !failureSet_.Contains(tid)); }
-        }
         ::close(fd);
+        if constexpr (dump) {
+            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
+        }
         w->Done();
     }
     template <bool dump>
@@ -73,10 +77,10 @@ private:
         const auto& id = shard.owner;
         auto handleFailure = [&](int32_t error, int32_t fd) {
             if (error != 0) { failureSet_.Insert(tid); }
-            if constexpr (dump) {
-                if (last) { layout_->CommitFile(id, false); }
-            }
             if (fd >= 0) { ::close(fd); }
+            if constexpr (dump) {
+                if (last) { CommitBlock(id, false); }
+            }
             w->Done();
         };
         if (result.error != 0) {

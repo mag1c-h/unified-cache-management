@@ -49,6 +49,10 @@ public:
         int32_t flags;
         OpenCallback callback;
     };
+    struct CommitTask {
+        Detail::BlockId id;
+        bool success;
+    };
 
     ~BlockOperator()
     {
@@ -57,27 +61,41 @@ public:
             std::lock_guard<std::mutex> lock{openQueue_.mutex};
             openQueue_.cv.notify_all();
         }
+        {
+            std::lock_guard<std::mutex> lock{commitQueue_.mutex};
+            commitQueue_.cv.notify_all();
+        }
         for (auto& worker : workers_) {
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker)
+    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
     {
         layout_ = layout;
-        nOpenWorker_ = nOpenWorker;
         for (size_t i = 0; i < nOpenWorker; ++i) {
-            workers_.push_back(std::thread{[this] { WorkerLoop(); }});
+            workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
+        }
+        for (size_t i = 0; i < nCommitWorker; ++i) {
+            workers_.push_back(std::thread{[this] { CommitWorkerLoop(); }});
         }
     }
     void Submit(std::list<OpenTask>&& tasks)
     {
-        std::lock_guard<std::mutex> lock{openQueue_.mutex};
-        openQueue_.queue.splice(openQueue_.queue.end(), tasks);
-        openQueue_.cv.notify_all();
+        auto& q = openQueue_;
+        std::lock_guard<std::mutex> lock{q.mutex};
+        q.queue.splice(q.queue.end(), tasks);
+        q.cv.notify_all();
+    }
+    void Submit(CommitTask&& task)
+    {
+        auto& q = commitQueue_;
+        std::lock_guard<std::mutex> lock{q.mutex};
+        q.queue.push_back(std::move(task));
+        q.cv.notify_one();
     }
 
 private:
-    void WorkerLoop()
+    void OpenWorkerLoop()
     {
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         for (;;) {
@@ -96,6 +114,21 @@ private:
             if (task.callback) { task.callback(OpenResult{fd, err}); }
         }
     }
+    void CommitWorkerLoop()
+    {
+        for (;;) {
+            CommitTask task;
+            {
+                std::unique_lock<std::mutex> lock{commitQueue_.mutex};
+                commitQueue_.cv.wait(lock, [this] { return stop_ || !commitQueue_.queue.empty(); });
+                if (stop_) { break; }
+                if (commitQueue_.queue.empty()) { continue; }
+                task = std::move(commitQueue_.queue.front());
+                commitQueue_.queue.pop_front();
+            }
+            layout_->CommitFile(task.id, task.success);
+        }
+    }
 
     template <class T>
     struct TaskQueue {
@@ -106,10 +139,9 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
-    size_t nOpenWorker_;
-    size_t nCommitWorker_;
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
+    TaskQueue<CommitTask> commitQueue_;
 };
 
 }  // namespace UC::AsyncStore
