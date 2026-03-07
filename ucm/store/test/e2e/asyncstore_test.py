@@ -63,9 +63,9 @@ def make_array(size, alignment=4096, dtype=np.uint8) -> np.ndarray:
 
 def main():
     backends = ["./build/data"]
-    block_size = 1048576
+    block_size = 256 * 1024
     open_concur = 32
-    lookup_concur = 8
+    lookup_concur = 16
     worker = setup(backends, block_size, open_concur, lookup_concur, True)
     scheduler = setup(backends, block_size, open_concur, lookup_concur, False)
     batch_number = 64

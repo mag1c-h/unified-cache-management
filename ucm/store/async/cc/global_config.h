@@ -38,9 +38,9 @@ public:
     int32_t deviceId{-1};
     size_t shardSize{0};
     size_t blockSize{0};
-    size_t lookupConcurrency{8};
+    size_t lookupConcurrency{16};
     size_t openConcurrency{32};
-    size_t commitConcurrency{16};
+    size_t commitConcurrency{4};
     size_t timeoutMs{30000};
     size_t dataDirShardBytes{3};
 
