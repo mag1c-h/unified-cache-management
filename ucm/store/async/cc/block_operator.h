@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_ASYNC_STORE_CC_BLOCK_OPENER_H
-#define UNIFIEDCACHE_ASYNC_STORE_CC_BLOCK_OPENER_H
+#ifndef UNIFIEDCACHE_ASYNC_STORE_CC_BLOCK_OPERATOR_H
+#define UNIFIEDCACHE_ASYNC_STORE_CC_BLOCK_OPERATOR_H
 
 #include <atomic>
 #include <condition_variable>
@@ -36,50 +36,44 @@
 
 namespace UC::AsyncStore {
 
-class BlockOpener {
+class BlockOperator {
 public:
-    struct Result {
+    struct OpenResult {
         int32_t fd;
         int32_t error;
     };
-    using Callback = std::function<void(Result)>;
-    struct Task {
+    using OpenCallback = std::function<void(OpenResult)>;
+    struct OpenTask {
         Detail::BlockId id;
         bool activated;
         int32_t flags;
-        Callback callback;
+        OpenCallback callback;
     };
 
-    ~BlockOpener()
+    ~BlockOperator()
     {
+        stop_ = true;
         {
-            std::lock_guard<std::mutex> lock{mutex_};
-            stop_ = true;
-            cv_.notify_all();
+            std::lock_guard<std::mutex> lock{openQueue_.mutex};
+            openQueue_.cv.notify_all();
         }
         for (auto& worker : workers_) {
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nWorker)
+    void Setup(const SpaceLayout* layout, const size_t nOpenWorker)
     {
         layout_ = layout;
-        nWorker_ = nWorker;
-        for (size_t i = 0; i < nWorker; ++i) {
+        nOpenWorker_ = nOpenWorker;
+        for (size_t i = 0; i < nOpenWorker; ++i) {
             workers_.push_back(std::thread{[this] { WorkerLoop(); }});
         }
     }
-    void Submit(Task&& task)
+    void Submit(std::list<OpenTask>&& tasks)
     {
-        std::lock_guard<std::mutex> lock{mutex_};
-        tasks_.push_back(std::move(task));
-        cv_.notify_one();
-    }
-    void Submit(std::list<Task>&& tasks)
-    {
-        std::lock_guard<std::mutex> lock{mutex_};
-        tasks_.splice(tasks_.end(), tasks);
-        cv_.notify_all();
+        std::lock_guard<std::mutex> lock{openQueue_.mutex};
+        openQueue_.queue.splice(openQueue_.queue.end(), tasks);
+        openQueue_.cv.notify_all();
     }
 
 private:
@@ -87,29 +81,35 @@ private:
     {
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         for (;;) {
-            Task task;
+            OpenTask task;
             {
-                std::unique_lock<std::mutex> lock{mutex_};
-                cv_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
+                std::unique_lock<std::mutex> lock{openQueue_.mutex};
+                openQueue_.cv.wait(lock, [this] { return stop_ || !openQueue_.queue.empty(); });
                 if (stop_) { break; }
-                if (tasks_.empty()) { continue; }
-                task = std::move(tasks_.front());
-                tasks_.pop_front();
+                if (openQueue_.queue.empty()) { continue; }
+                task = std::move(openQueue_.queue.front());
+                openQueue_.queue.pop_front();
             }
             const auto path = layout_->DataFilePath(task.id, task.activated);
             auto fd = ::open(path.c_str(), task.flags, mode);
             auto err = (fd < 0) ? errno : 0;
-            if (task.callback) { task.callback(Result{fd, err}); }
+            if (task.callback) { task.callback(OpenResult{fd, err}); }
         }
     }
 
+    template <class T>
+    struct TaskQueue {
+        std::list<T> queue;
+        std::mutex mutex;
+        std::condition_variable cv;
+    };
+
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
-    size_t nWorker_;
+    size_t nOpenWorker_;
+    size_t nCommitWorker_;
     std::list<std::thread> workers_;
-    std::list<Task> tasks_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
+    TaskQueue<OpenTask> openQueue_;
 };
 
 }  // namespace UC::AsyncStore

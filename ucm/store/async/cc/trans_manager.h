@@ -25,7 +25,7 @@
 #define UNIFIEDCACHE_ASYNC_STORE_CC_TRANS_MANAGER_H
 
 #include "aio_engine.h"
-#include "block_opener.h"
+#include "block_operator.h"
 #include "global_config.h"
 #include "template/task_wrapper.h"
 #include "trans_task.h"
@@ -36,7 +36,7 @@ class TransManager : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
     size_t nShardPerBlock_;
     const SpaceLayout* layout_;
-    BlockOpener opener_;
+    BlockOperator blockOperator_;
     AioEngine aio_;
 
 public:
@@ -46,7 +46,7 @@ public:
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         layout_ = layout;
-        opener_.Setup(layout, config.openConcurrency);
+        blockOperator_.Setup(layout, config.openConcurrency);
         return aio_.Setup();
     }
 
@@ -67,7 +67,7 @@ private:
     }
     template <bool dump>
     void OnOpenCallback(const Detail::TaskHandle& tid, WaiterPtr w, const Detail::Shard& shard,
-                        const BlockOpener::Result& result)
+                        const BlockOperator::OpenResult& result)
     {
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
@@ -104,21 +104,21 @@ private:
         const auto flags = O_DIRECT | (dump ? (O_CREAT | O_WRONLY) : O_RDONLY);
         const auto number = t->desc.size();
         w->Set(number);
-        std::list<BlockOpener::Task> tasks;
+        std::list<BlockOperator::OpenTask> tasks;
         for (size_t i = 0; i < number; ++i) {
-            BlockOpener::Task task;
+            BlockOperator::OpenTask task;
             const auto& shard = t->desc[i];
             task.id = shard.owner;
             task.activated = dump;
             task.flags = flags;
             task.callback = [this, tid = t->id, w,
-                             shard = std::ref(t->desc[i])](BlockOpener::Result result) {
+                             shard = std::ref(t->desc[i])](BlockOperator::OpenResult result) {
                 OnOpenCallback<dump>(tid, w, shard, result);
             };
             tasks.push_back(std::move(task));
         }
         t->metrics.Tick();
-        opener_.Submit(std::move(tasks));
+        blockOperator_.Submit(std::move(tasks));
     }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
