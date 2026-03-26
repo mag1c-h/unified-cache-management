@@ -28,6 +28,7 @@
 #include <functional>
 #include <linux/aio_abi.h>
 #include <thread>
+#include "global_config.h"
 #include "status/status.h"
 
 namespace UC::PosixStore {
@@ -48,7 +49,7 @@ public:
     };
 
     ~AioImpl();
-    Status Setup();
+    Status Setup(const Config& config);
     Status ReadAsync(Io&& io);
     Status WriteAsync(Io&& io);
 
@@ -57,6 +58,7 @@ private:
     void HarvestCompletions(std::vector<io_event>& events);
     Status SubmitIo(struct iocb* cb);
 
+    std::vector<ssize_t> cpuAffinityCores_{};
     size_t queueDepth_{4096};
     size_t epollTimeoutMs{10};
     size_t batchCompleteSize{512};

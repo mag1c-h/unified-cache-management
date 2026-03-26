@@ -31,7 +31,10 @@
 #include <list>
 #include <mutex>
 #include <thread>
+#include "global_config.h"
+#include "logger/logger.h"
 #include "space_layout.h"
+#include "thread/cpu_affinity.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -69,13 +72,14 @@ public:
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    void Setup(const Config& config, const SpaceLayout* layout)
     {
+        cpuAffinityCores_ = config.cpuAffinityCores;
         layout_ = layout;
-        for (size_t i = 0; i < nOpenWorker; ++i) {
+        for (size_t i = 0; i < config.openConcurrency; ++i) {
             workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
         }
-        for (size_t i = 0; i < nCommitWorker; ++i) {
+        for (size_t i = 0; i < config.commitConcurrency; ++i) {
             workers_.push_back(std::thread{[this] { CommitWorkerLoop(); }});
         }
     }
@@ -97,6 +101,10 @@ public:
 private:
     void OpenWorkerLoop()
     {
+        if (!cpuAffinityCores_.empty()) {
+            auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+            if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+        }
         constexpr const auto mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
         for (;;) {
             OpenTask task;
@@ -116,6 +124,10 @@ private:
     }
     void CommitWorkerLoop()
     {
+        if (!cpuAffinityCores_.empty()) {
+            auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+            if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+        }
         for (;;) {
             CommitTask task;
             {
@@ -139,6 +151,7 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
+    std::vector<ssize_t> cpuAffinityCores_{};
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
     TaskQueue<CommitTask> commitQueue_;

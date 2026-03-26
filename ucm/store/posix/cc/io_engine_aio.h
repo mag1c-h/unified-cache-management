@@ -35,7 +35,6 @@ namespace UC::PosixStore {
 class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     size_t shardSize_;
     size_t nShardPerBlock_;
-    const SpaceLayout* layout_;
     BlockOperator blockOperator_;
     AioImpl aio_;
 
@@ -45,9 +44,8 @@ public:
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        layout_ = layout;
-        blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
-        return aio_.Setup();
+        blockOperator_.Setup(config, layout);
+        return aio_.Setup(config);
     }
 
 private:

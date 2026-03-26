@@ -27,6 +27,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
 
@@ -86,8 +87,9 @@ AioImpl::~AioImpl()
     if (ctx_) { AioDestroy(ctx_); }
 }
 
-Status AioImpl::Setup()
+Status AioImpl::Setup(const Config& config)
 {
+    cpuAffinityCores_ = config.cpuAffinityCores;
     auto ret = AioSetup(queueDepth_, &ctx_);
     if (ret != 0) {
         UC_ERROR("Failed({}) to call AioSetup.", ret);
@@ -150,6 +152,10 @@ Status AioImpl::WriteAsync(Io&& io)
 
 void AioImpl::CompletionLoop()
 {
+    if (!cpuAffinityCores_.empty()) {
+        auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
+        if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
+    }
     std::vector<epoll_event> epollEvents(128);
     std::vector<io_event> aioEvents(batchCompleteSize);
     while (!stop_) {
