@@ -1,0 +1,70 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug information files
+*.dwo
+
+# Development environment files
+*.code-workspace
+.vscode/**
+.idea/**
+.git/**
+**/build/**
+**/output/**
+.venv/**
+**/__pycache__/**
+*.egg-info/**
+reports/
+dataset/
+logs/
+*.log
+result_outputs/
+results/
+.cache/
+backup/
+$null
+*__pycache__/
+.claude
+
+# build output files and installed files in csrc/ascend/
+ucm/sparse/gsa_on_device/csrc/ascend/output/
+ucm/sparse/gsa_on_device/csrc/ascend/build/
+ucm/sparse/gsa_on_device/csrc/ascend/_ucm_custom_ops/
+ucm/sparse/gsa_on_device/csrc/ascend/ucm_custom_ops.egg-info/
+ucm/sparse/gsa_on_device/csrc/ascend/dist/
