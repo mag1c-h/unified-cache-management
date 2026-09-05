@@ -29,7 +29,7 @@
 #include <type_traits>
 #include <variant>
 
-namespace UC::Store {
+namespace UC {
 
 #define UCM_STATUS_ERROR_LIST \
     X(Ok, 0)                  \
@@ -143,4 +143,4 @@ public:
 
 inline std::string format_as(const Status& status) { return status.ToString(); }
 
-}  // namespace UC::Store
+}  // namespace UC
