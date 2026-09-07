@@ -184,17 +184,6 @@ public:
     virtual Expected<TaskHandle> Dump(TaskDesc task) = 0;
 
     /**
-     * @brief Poll for task completion without blocking.
-     *
-     * @param taskId Task handle returned by Load() or Dump().
-     * @return Expected<bool>
-     *   - **true**  if the task has finished (successfully or with an error).
-     *   - **false** if the task is still running.
-     *   - Any other value indicates an error in the poll itself.
-     */
-    virtual Expected<bool> Check(TaskHandle taskId) = 0;
-
-    /**
      * @brief Block until the specified task completes.
      *
      * @param taskId Task handle returned by Load() or Dump().
