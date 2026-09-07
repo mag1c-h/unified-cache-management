@@ -89,6 +89,7 @@ public:
     UCM_STATUS_ERROR_LIST
 #undef X
 
+    [[nodiscard]] static Status Make(Error code) noexcept { return Status{code}; }
     template <typename... Args>
     [[nodiscard]] static Status Make(Error code, fmt::format_string<Args...> fmt, Args&&... args)
     {
