@@ -31,30 +31,33 @@ namespace UC::Store::Cache {
 struct Config {
     StoreV2* backend{nullptr};
     int32_t deviceId{-1};
+    int32_t physicalDeviceId{-1};
     size_t shardSize{};
-    size_t capacity{};
-    size_t segmentSize{};
-    size_t alignSize{};
+    size_t capacity{}; /* bytes */
+    size_t alignSize{4096};
     size_t timeoutMs{};
     bool enableDirectIo{true};
-    bool enableShareBuffer{false};
     bool enableDpc{false};
     bool enableLoadThrough{false};
+    size_t loadExclusiveSlotNumber{1024};
 
     static Config From(const Dictionary& dict)
     {
+        constexpr size_t kBytesPerGiB = 1024ULL * 1024ULL * 1024ULL;
         Config config;
         dict.Get("store_backend", config.backend);
         dict.GetNumber("device_id", config.deviceId);
+        dict.GetNumber("physical_device_id", config.physicalDeviceId);
         dict.GetNumber("shard_size", config.shardSize);
-        dict.GetNumber("cache_capacity_gb", config.capacity);
-        dict.GetNumber("cache_segment_size", config.segmentSize);
+        int64_t capacityGb = 0;
+        dict.GetNumber("cache_capacity_gb", capacityGb);
+        config.capacity = capacityGb > 0 ? static_cast<size_t>(capacityGb) * kBytesPerGiB : 0;
         dict.GetNumber("cache_align_size", config.alignSize);
         dict.GetNumber("cache_timeout_ms", config.timeoutMs);
         dict.Get("cache_enable_direct_io", config.enableDirectIo);
-        dict.Get("cache_enable_share_buffer", config.enableShareBuffer);
         dict.Get("cache_enable_dpc", config.enableDpc);
         dict.Get("cache_enable_load_through", config.enableLoadThrough);
+        dict.GetNumber("cache_load_exclusive_slot_number", config.loadExclusiveSlotNumber);
         return config;
     }
     void Show() const
@@ -62,15 +65,15 @@ struct Config {
         const char* ns = "UC::Store::Cache::Config";
         UC_INFO_UNLIMITED("{}.backend = {} .", ns, backend ? backend->Readme() : "nullptr");
         UC_INFO_UNLIMITED("{}.deviceId = {} .", ns, deviceId);
+        UC_INFO_UNLIMITED("{}.physicalDeviceId = {} .", ns, physicalDeviceId);
         UC_INFO_UNLIMITED("{}.shardSize = {} .", ns, shardSize);
-        UC_INFO_UNLIMITED("{}.capacity = {} .", ns, capacity);
-        UC_INFO_UNLIMITED("{}.segmentSize = {} .", ns, segmentSize);
+        UC_INFO_UNLIMITED("{}.capacity = {} bytes .", ns, capacity);
         UC_INFO_UNLIMITED("{}.alignSize = {} .", ns, alignSize);
         UC_INFO_UNLIMITED("{}.timeoutMs = {} .", ns, timeoutMs);
         UC_INFO_UNLIMITED("{}.enableDirectIo = {} .", ns, enableDirectIo);
-        UC_INFO_UNLIMITED("{}.enableShareBuffer = {} .", ns, enableShareBuffer);
         UC_INFO_UNLIMITED("{}.enableDpc = {} .", ns, enableDpc);
         UC_INFO_UNLIMITED("{}.enableLoadThrough = {} .", ns, enableLoadThrough);
+        UC_INFO_UNLIMITED("{}.loadExclusiveSlotNumber = {} .", ns, loadExclusiveSlotNumber);
     }
 };
 
