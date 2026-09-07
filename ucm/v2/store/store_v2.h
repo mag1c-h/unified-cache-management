@@ -26,7 +26,7 @@
 #include "status/status.h"
 #include "type/types.h"
 
-namespace UC {
+namespace UC::Store {
 
 class StoreV2 {
 public:
@@ -35,9 +35,9 @@ public:
     /**
      * @brief Sets up and configures the Store instance with the provided configuration.
      *
-     * @param config A dictionary containing configuration key-value pairs specific
-     *               to this Store instance. The content and structure of the dictionary
-     *               may vary depending on the concrete implementation.
+     * @param dict A dictionary containing configuration key-value pairs specific
+     *             to this Store instance. The content and structure of the dictionary
+     *             may vary depending on the concrete implementation.
      *
      * @return Status indicating the result of the setup operation:
      *         - Status::Ok() if setup was successful
@@ -49,7 +49,7 @@ public:
      * @note This method is called after object construction but before any processing
      *       operations that depend on the configuration.
      */
-    virtual Status Setup(const Dictionary& config) = 0;
+    virtual Status Setup(const Dictionary& dict) = 0;
 
     /**
      * @brief Get the readme information of the Store instance.
@@ -193,4 +193,4 @@ public:
     virtual Status Wait(TaskHandle taskId) = 0;
 };
 
-}  // namespace UC
+}  // namespace UC::Store

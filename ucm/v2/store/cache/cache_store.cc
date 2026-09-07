@@ -21,19 +21,37 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#pragma once
+#include "cache_config.h"
 
-#include <fmt/format.h>
+namespace UC::Store::Cache {
 
-#define UC_LOG(level, format, ...) \
-    fmt::println("[" #level "][{}:{}] " format, __FILE__, __LINE__, ##__VA_ARGS__)
-#define UC_DEBUG(format, ...) UC_LOG(D, format, ##__VA_ARGS__)
-#define UC_INFO(format, ...) UC_LOG(I, format, ##__VA_ARGS__)
-#define UC_WARN(format, ...) UC_LOG(W, format, ##__VA_ARGS__)
-#define UC_ERROR(format, ...) UC_LOG(E, format, ##__VA_ARGS__)
+class CacheStore : public StoreV2 {
+public:
+    Status Setup(const Dictionary& dict) override
+    {
+        auto config = Config::From(dict);
+        config.Show();
+        return Status::Ok();
+    }
+    std::string Readme() const override { return "CacheStore"; }
+    Expected<ssize_t> LookupOnPrefix(const BlockId* blocks, size_t num) override
+    {
+        return Status::Unsupported();
+    }
+    Expected<ssize_t> LookupOnReverse(const BlockId* blocks, size_t num) override
+    {
+        return Status::Unsupported();
+    }
+    void Prefetch(const BlockId* blocks, size_t num) {}
+    void Touch(const BlockId* blocks, size_t num) {}
+    Expected<TaskHandle> Load(TaskDesc task) override { return Status::Unsupported(); }
+    Expected<TaskHandle> Dump(TaskDesc task) override { return Status::Unsupported(); }
+    Status Wait(TaskHandle taskId) override { return Status::Unsupported(); }
+};
 
-#define UC_LOG_UNLIMITED UC_LOG
-#define UC_DEBUG_UNLIMITED(format, ...) UC_LOG_UNLIMITED(D, format, ##__VA_ARGS__)
-#define UC_INFO_UNLIMITED(format, ...) UC_LOG_UNLIMITED(I, format, ##__VA_ARGS__)
-#define UC_WARN_UNLIMITED(format, ...) UC_LOG_UNLIMITED(W, format, ##__VA_ARGS__)
-#define UC_ERROR_UNLIMITED(format, ...) UC_LOG_UNLIMITED(E, format, ##__VA_ARGS__)
+}  // namespace UC::Store::Cache
+
+extern "C" __attribute__((visibility("default"))) UC::Store::StoreV2* UcmMakeCacheStore()
+{
+    return new UC::Store::Cache::CacheStore();
+}
