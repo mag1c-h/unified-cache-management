@@ -25,11 +25,17 @@
 #include <chrono>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
+#include <mutex>
+#include <set>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 #include "cache/cache_buffer.h"
+#include "store_v2.h"
+
+extern "C" UC::Store::StoreV2* UcmMakeCacheStore();
 
 namespace {
 UC::Store::Cache::Config MakeConfig(int32_t deviceId, size_t m = 64)
@@ -50,6 +56,93 @@ UC::BlockId MakeBlockId(char c)
     UC::BlockId b;
     b.fill(static_cast<std::byte>(c));
     return b;
+}
+
+UC::BlockId MakeBlockIdN(uint32_t v)
+{
+    UC::BlockId b;
+    b.fill(static_cast<std::byte>(0));
+    std::memcpy(b.data(), &v, sizeof(v));
+    return b;
+}
+
+template <typename Pred>
+bool WaitUntil(Pred pred, int timeoutMs = 5000)
+{
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return pred();
+}
+
+/* Minimal backend: Load writes a pattern into the requested Io buffers. Completion is
+ * recorded per block; Loaded() is the synchronization point for test polling (Exist
+ * only proves a slot exists, not that the backend load finished). Load is batched by
+ * the executor, so only shard counts (not Load call counts) are deterministic. */
+class FakeBackend final : public UC::Store::StoreV2 {
+public:
+    std::atomic<int> loads{0};
+    std::atomic<int> shards{0};
+    std::mutex mtx;
+    std::set<UC::BlockId> loaded;
+
+    bool Loaded(const UC::BlockId& b)
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        return loaded.count(b) != 0;
+    }
+
+    UC::Status Setup(const UC::Dictionary&) override { return UC::Status::Ok(); }
+    std::string Readme() const override { return "FakeBackend"; }
+    UC::Expected<ssize_t> LookupOnPrefix(const UC::BlockId*, size_t) override { return -1; }
+    UC::Expected<ssize_t> LookupOnReverse(const UC::BlockId*, size_t) override { return -1; }
+    UC::Expected<UC::TaskHandle> Load(UC::TaskDesc task) override
+    {
+        auto handle = static_cast<UC::TaskHandle>(loads.fetch_add(1) + 1);
+        shards.fetch_add(static_cast<int>(task.shards.size()));
+        for (const auto& shard : task.shards) {
+            for (const auto& io : shard.addrs) {
+                if (io.addr != nullptr) { std::memset(io.addr, 0x5A, io.length); }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            for (const auto& shard : task.shards) { loaded.insert(shard.owner); }
+        }
+        return handle;
+    }
+    UC::Expected<UC::TaskHandle> Dump(UC::TaskDesc) override { return UC::Status::Unsupported(); }
+    UC::Status Wait(UC::TaskHandle) override { return UC::Status::Ok(); }
+};
+
+UC::Dictionary MakeWorkerDictWithBackend(int32_t rank, UC::Store::StoreV2* backend)
+{
+    UC::Dictionary dict;
+    dict.SetNumber("device_id", rank);
+    dict.SetNumber("physical_device_id", rank);
+    dict.SetNumber("shard_size", static_cast<int64_t>(64) * 1024 * 1024);
+    dict.SetNumber("cache_capacity_gb", static_cast<int64_t>(1));
+    dict.SetNumber("cache_load_exclusive_slot_number", static_cast<int64_t>(0));
+    dict.SetNumber("cache_timeout_ms", static_cast<int64_t>(5000));
+    dict.Set("store_backend", backend);
+    return dict;
+}
+
+UC::Dictionary MakeSchedulerDict()
+{
+    UC::Dictionary dict;
+    dict.SetNumber("device_id", -1);
+    dict.SetNumber("cache_timeout_ms", static_cast<int64_t>(5000));
+    return dict;
+}
+
+std::unique_ptr<UC::Store::StoreV2> MakeCacheStore(const UC::Dictionary& dict)
+{
+    std::unique_ptr<UC::Store::StoreV2> store(UcmMakeCacheStore());
+    if (store->Setup(dict).Failure()) { return nullptr; }
+    return store;
 }
 }  // namespace
 
@@ -489,4 +582,112 @@ TEST(UcmV2CacheBufferTest, PinStormReallocStress)
     stop.store(true, std::memory_order_relaxed);
     for (auto& th : threads) { th.join(); }
     EXPECT_FALSE(corrupted.load());
+}
+
+TEST(UcmV2CacheBufferTest, PrefetchRingFifoOverflowDropReuse)
+{
+    namespace C = UC::Store::Cache;
+    auto cfg = MakeConfig(-1); /* control-plane-only creator: no data plane */
+    C::Buffer buf;
+    ASSERT_TRUE(buf.Setup(cfg).Success());
+
+    /* FIFO order. */
+    std::vector<UC::BlockId> in;
+    for (uint32_t i = 0; i < 10; i++) { in.push_back(MakeBlockIdN(i + 1)); }
+    buf.EnqueuePrefetch(3, in.data(), in.size());
+    std::vector<UC::BlockId> out(C::kPrefetchDepth);
+    EXPECT_EQ(buf.DrainPrefetch(3, out.data(), out.size()), 10u);
+    for (size_t i = 0; i < 10; i++) { EXPECT_EQ(out[i], in[i]); }
+    EXPECT_EQ(buf.DrainPrefetch(3, out.data(), out.size()), 0u);
+
+    /* Overflow keeps the front of the batch and drops (counts) the remainder. */
+    std::vector<UC::BlockId> big;
+    for (uint32_t i = 0; i < C::kPrefetchDepth + 7; i++) { big.push_back(MakeBlockIdN(10000 + i)); }
+    buf.EnqueuePrefetch(3, big.data(), big.size());
+    EXPECT_EQ(buf.PrefetchDropped(3), 7u);
+    size_t got = 0;
+    size_t n;
+    while ((n = buf.DrainPrefetch(3, out.data(), 1000)) > 0) {
+        for (size_t i = 0; i < n; i++) { EXPECT_EQ(out[i], big[got + i]); }
+        got += n;
+    }
+    EXPECT_EQ(got, C::kPrefetchDepth);
+    EXPECT_EQ(buf.PrefetchDropped(3), 7u);
+
+    /* Reuse after wraparound. */
+    buf.EnqueuePrefetch(3, in.data(), in.size());
+    EXPECT_EQ(buf.DrainPrefetch(3, out.data(), out.size()), 10u);
+    for (size_t i = 0; i < 10; i++) { EXPECT_EQ(out[i], in[i]); }
+    EXPECT_EQ(buf.PrefetchDropped(3), 7u);
+}
+
+TEST(UcmV2CacheBufferTest, DirectedPrefetchLoadsFirstShardAndDedups)
+{
+    FakeBackend backend;
+    auto worker = MakeCacheStore(MakeWorkerDictWithBackend(0, &backend));
+    auto sched = MakeCacheStore(MakeSchedulerDict());
+    ASSERT_TRUE(worker != nullptr);
+    ASSERT_TRUE(sched != nullptr);
+
+    std::vector<UC::BlockId> blocks = {MakeBlockIdN(1), MakeBlockIdN(2)};
+    sched->Prefetch(blocks.data(), blocks.size(), 0);
+    ASSERT_TRUE(WaitUntil([&] { return backend.Loaded(blocks[0]) && backend.Loaded(blocks[1]); }))
+        << "directed prefetch did not reach the backend";
+    auto r = sched->LookupOnPrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(r.HasValue() && r.Value() == static_cast<ssize_t>(blocks.size()) - 1);
+
+    /* Repeating the same list loads nothing new; the sentinel, enqueued after the
+     * repeat and processed in FIFO order, proves the repeats were already served. */
+    sched->Prefetch(blocks.data(), blocks.size(), 0);
+    UC::BlockId sentinel = MakeBlockIdN(99);
+    sched->Prefetch(&sentinel, 1, 0);
+    ASSERT_TRUE(WaitUntil([&] { return backend.Loaded(sentinel); })) << "sentinel not loaded";
+    EXPECT_EQ(backend.shards.load(), 3);
+}
+
+TEST(UcmV2CacheBufferTest, RoundRobinPrefetchAndOfflineDrop)
+{
+    FakeBackend fb0;
+    FakeBackend fb1;
+    auto worker0 = MakeCacheStore(MakeWorkerDictWithBackend(0, &fb0));
+    auto worker1 = MakeCacheStore(MakeWorkerDictWithBackend(1, &fb1));
+    auto sched = MakeCacheStore(MakeSchedulerDict());
+    ASSERT_TRUE(worker0 != nullptr);
+    ASSERT_TRUE(worker1 != nullptr);
+    ASSERT_TRUE(sched != nullptr);
+
+    std::vector<UC::BlockId> blocks = {MakeBlockIdN(1), MakeBlockIdN(2), MakeBlockIdN(3),
+                                       MakeBlockIdN(4)};
+    sched->Prefetch(blocks.data(), blocks.size(), -1);
+
+    /* Sentinels on both ranks: their completion (FIFO, sequential executor) proves the
+     * prior batches were fully processed. */
+    UC::BlockId sent0 = MakeBlockIdN(6);
+    UC::BlockId sent1 = MakeBlockIdN(7);
+    sched->Prefetch(&sent0, 1, 0);
+    sched->Prefetch(&sent1, 1, 1);
+    ASSERT_TRUE(WaitUntil([&] { return fb0.Loaded(sent0); })) << "rank0 sentinel not loaded";
+    ASSERT_TRUE(WaitUntil([&] { return fb1.Loaded(sent1); })) << "rank1 sentinel not loaded";
+
+    /* Deterministic mapping: position i -> online[i % 2], i.e. {0,1,0,1}. */
+    EXPECT_EQ(fb0.shards.load(), 3); /* blocks 1,3 + sentinel */
+    EXPECT_EQ(fb1.shards.load(), 3); /* blocks 2,4 + sentinel */
+    EXPECT_TRUE(fb0.Loaded(blocks[0]) && fb0.Loaded(blocks[2]));
+    EXPECT_TRUE(fb1.Loaded(blocks[1]) && fb1.Loaded(blocks[3]));
+    EXPECT_FALSE(fb0.Loaded(blocks[1]) || fb0.Loaded(blocks[3]));
+    EXPECT_FALSE(fb1.Loaded(blocks[0]) || fb1.Loaded(blocks[2]));
+    auto r = sched->LookupOnPrefix(blocks.data(), blocks.size());
+    EXPECT_TRUE(r.HasValue() && r.Value() == 3);
+
+    /* Directed prefetch to an offline rank is dropped at enqueue time. */
+    UC::BlockId offlineBlock = MakeBlockIdN(5);
+    sched->Prefetch(&offlineBlock, 1, 5);
+    UC::BlockId sent2 = MakeBlockIdN(8);
+    sched->Prefetch(&sent2, 1, 0);
+    ASSERT_TRUE(WaitUntil([&] { return fb0.Loaded(sent2); })) << "rank0 sentinel 2 not loaded";
+    EXPECT_EQ(fb0.shards.load(), 4);
+    EXPECT_EQ(fb1.shards.load(), 3);
+    EXPECT_FALSE(fb0.Loaded(offlineBlock) || fb1.Loaded(offlineBlock));
+    auto off = sched->LookupOnPrefix(&offlineBlock, 1);
+    EXPECT_TRUE(off.HasValue() && off.Value() == -1);
 }

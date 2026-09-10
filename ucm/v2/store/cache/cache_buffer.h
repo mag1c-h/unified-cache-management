@@ -181,8 +181,7 @@ public:
             }
             RankDataDesc desc;
             desc.ready.store(1, std::memory_order_relaxed);
-            if (auto s = ctrl_->Layout().SetRankDesc(cfg.physicalDeviceId, desc);
-                s.Failure()) {
+            if (auto s = ctrl_->Layout().SetRankDesc(cfg.physicalDeviceId, desc); s.Failure()) {
                 return s;
             }
         }
@@ -193,6 +192,51 @@ public:
 
     /* Bucket count of the shared hash table (diagnostics / tests). */
     size_t NumBuckets() const { return nBuckets_; }
+    /* This rank's index; kInvalidIndex for control-plane-only participants. */
+    size_t MyRank() const { return myRank_; }
+    size_t SlotSize() const { return slotSize_; }
+    /* Online = the rank completed Setup (sticky: ranks do not leave in this deployment). */
+    bool RankReady(size_t rank) const
+    {
+        if (rank >= kMaxRanks) { return false; }
+        return ctrl_->Layout().Hdr()->rankDescs[rank].ready.load(std::memory_order_acquire) == 1;
+    }
+
+    /* Prefetch command rings. Contract: exactly one producer thread per domain (the
+     * scheduler's Prefetch caller) and one consumer thread per rank (the worker's
+     * prefetch executor); neither end of a ring may be called concurrently. Overflow
+     * keeps the front of the batch, drops the remainder and counts it. */
+    void EnqueuePrefetch(size_t rank, const BlockId* blocks, size_t num)
+    {
+        if (rank >= kMaxRanks || num == 0) { return; }
+        auto* ring = ctrl_->Layout().RingOf(rank);
+        auto h = ring->head.load(std::memory_order_relaxed);
+        auto t = ring->tail.load(std::memory_order_acquire);
+        auto free = kPrefetchDepth - static_cast<size_t>(h - t);
+        auto n = num < free ? num : free;
+        for (size_t i = 0; i < n; i++) { ring->entries[(h + i) % kPrefetchDepth] = blocks[i]; }
+        ring->head.store(h + n, std::memory_order_release);
+        if (n < num) { ring->dropped.fetch_add(num - n, std::memory_order_relaxed); }
+    }
+
+    size_t DrainPrefetch(size_t rank, BlockId* out, size_t max)
+    {
+        if (rank >= kMaxRanks || max == 0) { return 0; }
+        auto* ring = ctrl_->Layout().RingOf(rank);
+        auto t = ring->tail.load(std::memory_order_relaxed);
+        auto h = ring->head.load(std::memory_order_acquire);
+        auto avail = static_cast<size_t>(h - t);
+        auto n = max < avail ? max : avail;
+        for (size_t i = 0; i < n; i++) { out[i] = ring->entries[(t + i) % kPrefetchDepth]; }
+        ring->tail.store(t + n, std::memory_order_release);
+        return n;
+    }
+
+    uint64_t PrefetchDropped(size_t rank) const
+    {
+        if (rank >= kMaxRanks) { return 0; }
+        return ctrl_->Layout().RingOf(rank)->dropped.load(std::memory_order_relaxed);
+    }
 
     Handle Get(const BlockId& blockId, size_t offset, bool allowReserved = false)
     {

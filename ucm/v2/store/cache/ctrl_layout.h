@@ -30,9 +30,10 @@
 
 namespace UC::Store::Cache {
 
-/* Shared control-plane layout: [Header][nBuckets bucket heads][kLockStripes striped
- * locks][slot metadata]. There are no slot locks: per-slot coordination is the lock-free
- * pin protocol on SlotMeta::reference (see Buffer).
+/* Shared control-plane layout:
+ * [Header][nBuckets bucket heads][kLockStripes striped locks][slot metadata]
+ * [kMaxRanks prefetch rings]. There are no slot locks: per-slot coordination is the
+ * lock-free pin protocol on SlotMeta::reference (see Buffer).
  *
  * Slot metadata is initialized lazily per rank (InitSlotRange): a rank's slots are only
  * reachable from buckets after that rank links them in, which happens strictly after its
@@ -57,7 +58,8 @@ public:
     }
     static size_t TotalSize(size_t nBuckets, size_t totalSlots)
     {
-        return SlotMetaOffset(nBuckets) + sizeof(SlotMeta) * totalSlots;
+        return SlotMetaOffset(nBuckets) + sizeof(SlotMeta) * totalSlots +
+               sizeof(PrefetchRing) * kMaxRanks;
     }
 
     void Bind(void* base, size_t maxRanks, size_t nSlotsPerRank, size_t nBuckets)
@@ -93,6 +95,13 @@ public:
         return reinterpret_cast<SlotMeta*>(static_cast<std::byte*>(base_) +
                                            SlotMetaOffset(nBuckets_));
     }
+    PrefetchRing* RingOf(size_t rank) const
+    {
+        auto* rings = reinterpret_cast<PrefetchRing*>(static_cast<std::byte*>(base_) +
+                                                      SlotMetaOffset(nBuckets_) +
+                                                      sizeof(SlotMeta) * totalSlots_);
+        return rings + rank;
+    }
 
     /* Initializes everything except slot metadata (see InitSlotRange). */
     void InitHeader(size_t slotSize)
@@ -114,6 +123,13 @@ public:
         auto* stripes =
             reinterpret_cast<BucketLock*>(static_cast<std::byte*>(base_) + LocksOffset(nBuckets_));
         for (size_t i = 0; i < kLockStripes; i++) { stripes[i].Init(); }
+        /* Ring counters only; entries stay untouched until first use. */
+        for (size_t r = 0; r < maxRanks_; r++) {
+            auto* ring = RingOf(r);
+            ring->head.store(0, std::memory_order_relaxed);
+            ring->tail.store(0, std::memory_order_relaxed);
+            ring->dropped.store(0, std::memory_order_relaxed);
+        }
     }
 
     /* Lazily initialize one rank's slot range. Only legal while that rank's
