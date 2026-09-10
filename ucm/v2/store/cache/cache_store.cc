@@ -43,7 +43,7 @@ public:
     {
         return Status::Unsupported();
     }
-    virtual void Prefetch(const BlockId* /*blocks*/, size_t /*num*/) {}
+    virtual void Prefetch(const BlockId* /*blocks*/, size_t /*num*/, int32_t /*targetDeviceId*/) {}
     virtual void Touch(const BlockId* /*blocks*/, size_t /*num*/) {}
     virtual Expected<TaskHandle> Load(TaskDesc task) { return Status::Unsupported(); }
     virtual Expected<TaskHandle> Dump(TaskDesc task) { return Status::Unsupported(); }
@@ -86,9 +86,9 @@ public:
         }
         return -1;
     }
-    void Prefetch(const BlockId* blocks, size_t num) override
+    void Prefetch(const BlockId* blocks, size_t num, int32_t targetDeviceId) override
     {
-        if (backend_) { backend_->Prefetch(blocks, num); }
+        if (backend_) { backend_->Prefetch(blocks, num, targetDeviceId); }
     }
     void Touch(const BlockId* blocks, size_t num) override
     {
@@ -182,7 +182,10 @@ public:
     {
         return role_->LookupOnReverse(blocks, num);
     }
-    void Prefetch(const BlockId* blocks, size_t num) { role_->Prefetch(blocks, num); }
+    void Prefetch(const BlockId* blocks, size_t num, int32_t targetDeviceId) override
+    {
+        role_->Prefetch(blocks, num, targetDeviceId);
+    }
     void Touch(const BlockId* blocks, size_t num) { role_->Touch(blocks, num); }
     Expected<TaskHandle> Load(TaskDesc task) override { return role_->Load(std::move(task)); }
     Expected<TaskHandle> Dump(TaskDesc task) override { return role_->Dump(std::move(task)); }

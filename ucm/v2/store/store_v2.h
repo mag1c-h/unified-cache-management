@@ -118,11 +118,15 @@ public:
      *
      * @param blocks Array of block identifiers to be prefetched.
      * @param num Number of block identifiers to be prefetched.
+     * @param targetDeviceId Target device for device-affinity prefetch.
+     *                       - >= 0: prefetch with affinity to that device,
+     *                         i.e. make the blocks locally accessible to it.
+     *                       - -1 (default): no affinity restriction.
      *
      * @note Thread-safe; may be called concurrently with other operations.
      * @note Default implementation does nothing.
      */
-    virtual void Prefetch(const BlockId* blocks, size_t num) {}
+    virtual void Prefetch(const BlockId* blocks, size_t num, int32_t targetDeviceId = -1) {}
 
     /**
      * @brief Refresh hotness of the given blocks across the store stack.
