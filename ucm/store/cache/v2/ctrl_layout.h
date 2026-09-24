@@ -43,7 +43,7 @@ inline constexpr size_t kMaxRanks{128};
 inline constexpr size_t kMaxLockStripes{1ULL << 16};
 inline constexpr size_t kMinBuckets{1ULL << 10};
 inline constexpr size_t kMaxBuckets{1ULL << 24};
-inline constexpr uint32_t kCtrlMagic{0x55433201U};  // "UC2" + layout version 1.
+inline constexpr uint32_t kCtrlMagic{0x55433202U};  // "UC2" + layout version 2.
 
 class CtrlLayout {
 public:
@@ -77,12 +77,19 @@ public:
     };
     struct RankDataDesc {
         std::atomic<size_t> handle{kInvalid};
+        /* Set by the rank itself once it has mapped every peer segment. */
+        std::atomic<uint8_t> ready{0};
 
         RankDataDesc() = default;
-        RankDataDesc(const RankDataDesc& o) : handle(o.handle.load(std::memory_order_relaxed)) {}
+        RankDataDesc(const RankDataDesc& o)
+            : handle(o.handle.load(std::memory_order_relaxed)),
+              ready(o.ready.load(std::memory_order_relaxed))
+        {
+        }
         RankDataDesc& operator=(const RankDataDesc& o)
         {
             handle.store(o.handle.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            ready.store(o.ready.load(std::memory_order_relaxed), std::memory_order_relaxed);
             return *this;
         }
     };
@@ -93,6 +100,7 @@ private:
     friend struct BufferTestAccess;
     friend struct CtrlLayoutTestAccess;
     friend struct CtrlStrategyTestAccess;
+    friend struct DataStrategyTestAccess;
 
     struct Header {
         std::atomic<uint32_t> magic{0};
@@ -175,6 +183,7 @@ public:
         header->lockStripeCount = lockStripeCount_;
         for (size_t rank = 0; rank < rankCount_; ++rank) {
             header->rankDescs[rank].handle.store(kInvalid, std::memory_order_relaxed);
+            header->rankDescs[rank].ready.store(0, std::memory_order_relaxed);
             header->clockHands[rank].store(0, std::memory_order_relaxed);
         }
         auto* buckets = Buckets();
@@ -230,6 +239,21 @@ public:
         RankDataDesc result;
         result.handle.store(handle, std::memory_order_relaxed);
         return result;
+    }
+
+    /* Marks that this rank has mapped every peer segment; gates segment-name
+     * release so no participant can miss a shm_open. */
+    Status MarkRankDataReady(size_t rank)
+    {
+        if (rank >= rankCount_) { return Status::InvalidParam("rank out of range"); }
+        Hdr()->rankDescs[rank].ready.store(1, std::memory_order_release);
+        return Status::OK();
+    }
+
+    bool IsRankDataReady(size_t rank) const
+    {
+        return rank < rankCount_ &&
+               Hdr()->rankDescs[rank].ready.load(std::memory_order_acquire) != 0;
     }
 
     std::atomic<size_t>* Buckets() const
