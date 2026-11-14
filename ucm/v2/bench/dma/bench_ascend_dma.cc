@@ -35,16 +35,18 @@
  * assignment it picks.
  *
  * The bench owns the Ascend runtime lifecycle -- aclInit, aclrtSetDevice,
- * aclrtFinalize; the engines take none of it -- and allocates both sides
+ * aclFinalize; the engines take none of it -- and allocates both sides
  * itself: the host side as an anonymous mmap, optionally --huge 2 MiB
- * hugetlb (a bench must not measure a fallback it did not ask for, so a
- * refused hugetlb mmap is fatal), or as aclrtMallocHost; the device side
- * as one aclrtMalloc block. The host region is handed to the engine at
- * Setup, which pins it best effort.
+ * hugetlb or --interleave spread over the allowed NUMA nodes (a bench
+ * must not measure a fallback it did not ask for, so a refused hugetlb
+ * mmap or interleave policy is fatal), or as aclrtMallocHost; the device
+ * side as one aclrtMalloc block. The host region is handed to the
+ * engine at Setup, which pins it best effort.
  */
 
-#include <acl/acl_rt.h>
+#include <acl/acl.h>
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -52,17 +54,21 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <limits>
+#include <linux/mempolicy.h>
 #include <memory>
 #include <new>
 #include <string>
 #include <string_view>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <vector>
-#include "dma_engine.h"
-#include "dma_engine_registry.h"
+#include "memory/dma/dma_engine.h"
+#include "memory/dma/dma_engine_registry.h"
 #include "status/status.h"
 
 /* Older headers may lack the hugetlb mmap flags; fall back to the
@@ -85,6 +91,8 @@ using DmaJob = DmaEngine::DmaJob;
 constexpr std::size_t kHugePageSize = 2UL << 20;
 /** @brief mmap flag selecting 2 MiB hugetlb pages (huge page size 21). */
 constexpr int kHugePageFlag = 21 << MAP_HUGE_SHIFT;
+/** @brief Where the NUMA nodes this process may allocate from are published. */
+constexpr const char* kStatusPath = "/proc/self/status";
 
 /** @brief Host working set backing of the bench. */
 enum class HostMem {
@@ -104,6 +112,7 @@ struct Options {
     std::string engine{}; /* empty takes this build's default engine */
     HostMem hostMem{HostMem::Mmap};
     bool huge{false};
+    bool interleave{false};
     std::size_t warmup{3};
     std::size_t rounds{10};
     Direction direction{Direction::H2D};
@@ -239,6 +248,9 @@ void PrintHelp(std::string_view program)
     fmt::println(
         "  --huge             mmap host memory on 2 MiB hugetlb pages (mmap only; fails hard");
     fmt::println("                     when no huge pages are reserved; default: off)");
+    fmt::println(
+        "  --interleave       interleave mmap host memory over the allowed NUMA nodes (mmap");
+    fmt::println("                     only; fails hard when mbind is rejected; default: off)");
     fmt::println("  --warmup <n>       warmup rounds before measuring (default: 3)");
     fmt::println("  --rounds <n>       measured rounds (default: 10)");
     fmt::println("  --direction <dir>  transfer direction: h2d | d2h (default: h2d)");
@@ -285,6 +297,8 @@ Expected<Options> ParseOptions(int argc, char const* const argv[])
             }
         } else if (arg == "--huge") {
             options.huge = true;
+        } else if (arg == "--interleave") {
+            options.interleave = true;
         } else if (arg == "--warmup") {
             const auto value = takeValue();
             if (!value.HasValue()) { return value.Error(); }
@@ -383,7 +397,7 @@ Expected<Layout> ComputeLayout(const Options& options)
 
 /**
  * @brief Process-wide Ascend runtime guard: aclInit on demand,
- *        aclrtFinalize at teardown. The dma engines deliberately leave
+ *        aclFinalize at teardown. The dma engines deliberately leave
  *        this lifecycle to their caller.
  */
 class AscendRuntime {
@@ -393,7 +407,7 @@ public:
     AscendRuntime& operator=(const AscendRuntime&) = delete;
     ~AscendRuntime()
     {
-        if (initialized_) { aclrtFinalize(); }
+        if (initialized_) { aclFinalize(); }
     }
 
     Status Initialize()
@@ -411,12 +425,146 @@ private:
 };
 
 /**
+ * @brief Parses a decimal node id of at most four digits; anything else
+ *        fails.
+ */
+bool ParseNodeNumber(std::string_view text, std::uint32_t& value)
+{
+    if (text.empty() || text.size() > 4) { return false; }
+    std::uint32_t parsed = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') { return false; }
+        parsed = parsed * 10 + static_cast<std::uint32_t>(c - '0');
+    }
+    value = parsed;
+    return true;
+}
+
+/** @brief Parses one comma-separated element of the allowed list: "N" or "A-B". */
+bool ParseNodeRange(std::string_view part, std::uint32_t& first, std::uint32_t& last)
+{
+    const std::size_t dash = part.find('-');
+    if (dash == std::string_view::npos) {
+        if (!ParseNodeNumber(part, first)) { return false; }
+        last = first;
+        return true;
+    }
+    return ParseNodeNumber(part.substr(0, dash), first) &&
+           ParseNodeNumber(part.substr(dash + 1), last) && first <= last;
+}
+
+/**
+ * @brief Reads the NUMA nodes this process may allocate from, published
+ *        as the Mems_allowed_list line of /proc/self/status. The kernel
+ *        reports the same set through getmempolicy(MPOL_F_MEMS_ALLOWED),
+ *        but that syscall is filtered behind CAP_SYS_NICE by the default
+ *        container seccomp profiles, while the file always reads.
+ *
+ * @return Expected the node ids on success; OsApiError when the file is
+ *         unreadable or the line is missing or malformed -- an
+ *         indeterminable set is never guessed.
+ */
+Expected<std::vector<std::uint32_t>> ReadAllowedNodes()
+{
+    const int fd = ::open(kStatusPath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return Status::OsApiError("open of {} failed: {}", kStatusPath, std::strerror(errno));
+    }
+
+    std::string text;
+    char chunk[512];
+    for (;;) {
+        const ssize_t n = ::read(fd, chunk, sizeof(chunk));
+        if (n < 0) {
+            if (errno == EINTR) { continue; }
+            const int err = errno;
+            ::close(fd);
+            return Status::OsApiError("read of {} failed: {}", kStatusPath, std::strerror(err));
+        }
+        if (n == 0) { break; }
+        text.append(chunk, static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+
+    const std::string key = "Mems_allowed_list:";
+    const std::size_t keyAt = text.find(key);
+    if (keyAt == std::string::npos) {
+        return Status::OsApiError("{} carries no Mems_allowed_list line", kStatusPath);
+    }
+    std::size_t pos = keyAt + key.size();
+    std::size_t end = text.find('\n', pos);
+    if (end == std::string::npos) { end = text.size(); }
+    while (pos < end && (text[pos] == ' ' || text[pos] == '\t')) { ++pos; }
+    while (end > pos && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r')) {
+        --end;
+    }
+    const std::string list = text.substr(pos, end - pos);
+
+    std::vector<std::uint32_t> nodes;
+    pos = 0;
+    while (pos <= list.size()) {
+        const std::size_t comma = list.find(',', pos);
+        const std::size_t len = comma == std::string::npos ? std::string::npos : comma - pos;
+        std::uint32_t first = 0;
+        std::uint32_t last = 0;
+        if (!ParseNodeRange(list.substr(pos, len), first, last)) {
+            return Status::OsApiError("malformed Mems_allowed_list value '{}'", list);
+        }
+        for (std::uint32_t node = first;; ++node) {
+            nodes.push_back(node);
+            if (node == last) { break; }
+        }
+        if (comma == std::string::npos) { break; }
+        pos = comma + 1;
+    }
+    return nodes;
+}
+
+/**
+ * @brief Interleaves the mapping over every NUMA node this process may
+ *        allocate from (see ReadAllowedNodes) -- in a cpuset-restricted
+ *        container that is the container's own node set, never the
+ *        host-wide online list. Strict: a single allocatable node makes
+ *        interleaving vacuous, but an unreadable allowed set or a
+ *        rejected mbind fails the caller rather than silently
+ *        mis-placing the working set. The mask is padded to the word
+ *        count the kernel reads for the given bit width: mbind rounds
+ *        maxnode up to whole unsigned longs and copies that many words
+ *        from user space.
+ *
+ * @return Ok on success; OsApiError when the allowed-node set cannot be
+ *         read or the interleave policy is rejected.
+ */
+Status InterleaveOverAllowedNodes(void* base, std::size_t size)
+{
+    auto nodes = ReadAllowedNodes();
+    if (!nodes.HasValue()) { return nodes.Error(); }
+    const std::vector<std::uint32_t>& allowed = nodes.Value();
+    if (allowed.size() <= 1) { return Status::Ok(); }
+
+    std::uint32_t highest = 0;
+    for (std::uint32_t node : allowed) { highest = std::max(highest, node); }
+    const std::size_t maxnode = static_cast<std::size_t>(highest) + 2;
+    const std::size_t words = (maxnode + 63) / 64;
+    std::vector<unsigned long> mask(words, 0UL);
+    for (std::uint32_t node : allowed) { mask[node / 64] |= 1UL << (node % 64); }
+
+    if (::syscall(SYS_mbind, base, size, MPOL_INTERLEAVE, mask.data(), maxnode, 0) != 0) {
+        return Status::OsApiError("mbind interleave over {} allowed NUMA nodes failed: {}",
+                                  allowed.size(), std::strerror(errno));
+    }
+    return Status::Ok();
+}
+
+/**
  * @brief Host working set of the bench: one contiguous region released
  *        by the path it was allocated on -- munmap for mmap,
- *        aclrtFreeHost for aclrt -- and fully touched at allocation so
- *        the measured rounds never fault. mappedBytes_ carries the
- *        engine-facing region length: the 2 MiB-aligned mapping length
- *        on the hugetlb path, the plain byte count otherwise.
+ *        aclrtFreeHost for aclrt -- optionally interleaved over the
+ *        allowed NUMA nodes before its pages are touched, then fully
+ *        touched at allocation so the measured rounds never fault.
+ *        mappedBytes_ carries the engine-facing region length: the
+ *        2 MiB-aligned mapping length on the hugetlb path, the plain
+ *        byte count otherwise.
  */
 class HostBuffer {
 public:
@@ -425,14 +573,14 @@ public:
     HostBuffer& operator=(const HostBuffer&) = delete;
     ~HostBuffer() { Release(); }
 
-    Status Allocate(std::size_t bytes, HostMem type, bool huge);
+    Status Allocate(std::size_t bytes, HostMem type, bool huge, bool interleave);
     void Release() noexcept;
 
     void* Base() const noexcept { return base_; }
     std::size_t MappedBytes() const noexcept { return mappedBytes_; }
 
 private:
-    Status AllocateMmap(std::size_t bytes, bool huge);
+    Status AllocateMmap(std::size_t bytes, bool huge, bool interleave);
     Status AllocateAclrt(std::size_t bytes);
 
     void* base_{nullptr};
@@ -440,15 +588,16 @@ private:
     HostMem type_{HostMem::Mmap};
 };
 
-Status HostBuffer::Allocate(std::size_t bytes, HostMem type, bool huge)
+Status HostBuffer::Allocate(std::size_t bytes, HostMem type, bool huge, bool interleave)
 {
     Release();
-    /* aclrtMallocHost has no page-size knob, so huge only shapes the
-     * mmap path; the config echo shows the effective backing */
-    return type == HostMem::Aclrt ? AllocateAclrt(bytes) : AllocateMmap(bytes, huge);
+    /* aclrtMallocHost has no page-size or NUMA knob, so huge and
+     * interleave only shape the mmap path; the config echo shows the
+     * effective backing */
+    return type == HostMem::Aclrt ? AllocateAclrt(bytes) : AllocateMmap(bytes, huge, interleave);
 }
 
-Status HostBuffer::AllocateMmap(std::size_t bytes, bool huge)
+Status HostBuffer::AllocateMmap(std::size_t bytes, bool huge, bool interleave)
 {
     std::size_t mapped = bytes;
     int pageFlags = 0;
@@ -473,6 +622,17 @@ Status HostBuffer::AllocateMmap(std::size_t bytes, bool huge)
         }
         return Status::OsApiError("mapping {} bytes failed (errno {}: {})", bytes, errno,
                                   std::strerror(errno));
+    }
+    if (interleave) {
+        /* the policy must sit before the first fault -- pages touched
+         * earlier keep their node -- and a rejected policy is fatal:
+         * the bench would otherwise measure a placement it did not ask
+         * for */
+        const Status spread = InterleaveOverAllowedNodes(base, mapped);
+        if (spread.Failure()) {
+            munmap(base, mapped);
+            return spread;
+        }
     }
     std::memset(base, 0, mapped); /* fault every page in before the rounds */
     mlock(base, mapped);          /* best effort: keep the pages resident */
@@ -511,7 +671,9 @@ void HostBuffer::Release() noexcept
 /**
  * @brief Device working set of the bench: one contiguous aclrtMalloc
  *        allocation, ACL_MEM_MALLOC_HUGE_FIRST so the runtime prefers
- *        device huge pages, released with aclrtFree.
+ *        device huge pages, released with aclrtFree -- and fully
+ *        touched at allocation, like the host side, so the first
+ *        measured round never pays the cold-page cost.
  */
 class DeviceBuffer {
 public:
@@ -535,6 +697,15 @@ Status DeviceBuffer::Allocate(std::size_t bytes)
     const aclError code = aclrtMalloc(&base, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
     if (code != ACL_SUCCESS || base == nullptr) {
         return Status::OsApiError("aclrtMalloc of {} bytes failed: acl error {}", bytes, code);
+    }
+    /* first touch: whether a CANN build commits device pages eagerly or
+     * lazily, the round that first reaches a page pays for it, and
+     * --warmup 0 opts out of the warmup rounds covering that */
+    const aclError touched = aclrtMemset(base, bytes, 0, bytes);
+    if (touched != ACL_SUCCESS) {
+        aclrtFree(base);
+        return Status::OsApiError("first-touching {} bytes of device memory failed: acl error {}",
+                                  bytes, touched);
     }
     base_ = base;
     return Status::Ok();
@@ -632,6 +803,7 @@ void PrintConfig(const Options& options, const Layout& layout)
     std::string hostMem =
         options.hostMem == HostMem::Aclrt ? "aclrt (aclrtMallocHost)" : "mmap (anonymous)";
     if (options.hostMem == HostMem::Mmap && options.huge) { hostMem += ", 2 MiB hugetlb"; }
+    if (options.hostMem == HostMem::Mmap && options.interleave) { hostMem += ", NUMA interleaved"; }
     fmt::println("engine           : {}",
                  options.engine.empty() ? "(build default)" : options.engine);
     fmt::println("device           : {}", options.device);
@@ -717,7 +889,8 @@ int Run(int argc, char const* const argv[])
     PrintConfig(options, layout);
 
     HostBuffer host;
-    if (const Status st = host.Allocate(layout.bytesPerRound, options.hostMem, options.huge);
+    if (const Status st =
+            host.Allocate(layout.bytesPerRound, options.hostMem, options.huge, options.interleave);
         st.Failure()) {
         return Fail(st);
     }
